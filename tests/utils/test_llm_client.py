@@ -262,3 +262,48 @@ def test_call_handles_response_json_failure(monkeypatch):
     out = c._call_chat_completions_json(provider, [{"role": "user", "content": "hi"}])
     assert out is None
     assert any("Exception attempt 1" in m for m in logs)
+
+def test_call_sets_authorization_header_when_api_key_present(monkeypatch):
+    logs = []
+    patch_logger(monkeypatch, logs)
+    patch_sleep_and_random(monkeypatch)
+
+    resp = FakeResponse(
+        status_code=200,
+        json_data={"choices": [{"message": {"content": '{"ok": true}'}}]},
+    )
+    fake_http = FakeHTTPXClient([resp])
+    patch_httpx_client(monkeypatch, fake_http)
+
+    provider = llm.LLMProvider(label="p", base_url="http://x/v1", model="m", api_key="sk-123")
+    c = llm.LLMClient(max_attempts=1)
+
+    out = c._call_chat_completions_json(provider, [{"role": "user", "content": "hi"}])
+    assert out == {"ok": True}
+
+    sent_headers = fake_http.posts[0]["headers"]
+    assert sent_headers["Authorization"] == "Bearer sk-123"
+
+
+def test_call_sets_last_err_json_parse_failed_when_extraction_returns_none(monkeypatch):
+    logs = []
+    patch_logger(monkeypatch, logs)
+    patch_sleep_and_random(monkeypatch)
+
+    # HTTP 200, JSON is present, but content has no JSON object -> _extract_json returns None.
+    resp = FakeResponse(
+        status_code=200,
+        json_data={"choices": [{"message": {"content": "no json here"}}]},
+        text="",
+    )
+    fake_http = FakeHTTPXClient([resp])
+    patch_httpx_client(monkeypatch, fake_http)
+
+    provider = llm.LLMProvider(label="p", base_url="http://x/v1", model="m")
+    c = llm.LLMClient(max_attempts=1)
+
+    out = c._call_chat_completions_json(provider, [{"role": "user", "content": "hi"}])
+    assert out is None
+
+    # This proves we hit the "JSON parse failed" branch and then exhausted.
+    assert any("Exhausted attempts. Last error: JSON parse failed" in m for m in logs)
